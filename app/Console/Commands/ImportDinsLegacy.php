@@ -18,15 +18,14 @@ class ImportDinsLegacy extends Command
 
     public function handle()
     {
-        // --- PERUBAHAN UTAMA DI SINI ---
-        // Kita tidak lagi menembak URL, tapi membaca file di folder project
+        // Lokasi file JSON
         $path = base_path('data_lama.json');
 
         $this->info("📂 Membaca file lokal dari: $path");
 
         // 1. Cek Apakah File Ada?
         if (! file_exists($path)) {
-            $this->error('❌ File data_lama.json tidak ditemukan! Pastikan sudah didownload dan ditaruh di folder project (sejajar dengan .env).');
+            $this->error('❌ File data_lama.json tidak ditemukan! Pastikan file ada di folder project utama.');
 
             return;
         }
@@ -53,7 +52,6 @@ class ImportDinsLegacy extends Command
 
             $this->info("✅ Berhasil membaca file! Ditemukan {$totalData} data transaksi.");
 
-            // Konfirmasi User
             if (! $this->confirm('Yakin ingin mengimport data ini ke Supabase? (Data duplikat akan diskip)', true)) {
                 return;
             }
@@ -92,22 +90,34 @@ class ImportDinsLegacy extends Command
                     ]
                 );
 
-                // C. Tebak Akun Keuangan
+                // --- BAGIAN INI SUDAH DIREVISI ---
+                // C. Tebak Akun Keuangan (Mapping Cerdas)
                 $namaKatLower = strtolower($namaKategoriLama);
-                $namaAkunTarget = 'Lainnya'; // Default
+                $namaAkunTarget = 'Lainnya'; // Default kalau gak nemu keyword
 
+                // Logic Mapping Akun
                 if (str_contains($namaKatLower, 'seabank')) {
                     $namaAkunTarget = 'SeaBank';
                 } elseif (str_contains($namaKatLower, 'dompet') || str_contains($namaKatLower, 'tunai')) {
                     $namaAkunTarget = 'Dompet Fisik';
-                } elseif (str_contains($namaKatLower, 'laci') || str_contains($namaKatLower, 'kas')) {
-                    $namaAkunTarget = 'Laci Kas';
+                }
+                // DETEKSI BARU: Kalau ada kata 'tabungan', 'laci', atau 'kotak' -> Masuk ke Kas Laci
+                elseif (
+                    str_contains($namaKatLower, 'laci') ||
+                    str_contains($namaKatLower, 'kas') ||
+                    str_contains($namaKatLower, 'kotak') ||
+                    str_contains($namaKatLower, 'tabungan bulanan')
+                ) {
+                    // Kita cari akun yang namanya mengandung kata 'Kas Laci'
+                    // (Ini akan cocok dengan nama baru: "Kas Laci / Kotak Tabungan")
+                    $namaAkunTarget = 'Kotak Tabungan';
                 }
 
+                // Cari di Database
                 $akun = AkunKeuangan::where('nama', 'like', "%$namaAkunTarget%")->first();
                 $akunId = $akun ? $akun->id : null;
 
-                // D. Cek Duplikat
+                // D. Cek Duplikat (Berdasarkan tanggal, nominal, keterangan)
                 $tanggal = Carbon::parse($item['created_at'])->format('Y-m-d');
                 $exists = Transaksi::where('id_user', $userId)
                     ->where('tanggal_transaksi', $tanggal)
@@ -130,7 +140,7 @@ class ImportDinsLegacy extends Command
                         'adalah_kalibrasi' => false,
                     ]);
 
-                    // Update Saldo (Opsional)
+                    // Update Saldo Realtime
                     if ($akun) {
                         if ($jenis == 'pemasukan') {
                             $akun->increment('saldo_saat_ini', $item['nominal']);
